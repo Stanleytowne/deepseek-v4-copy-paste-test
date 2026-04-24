@@ -53,18 +53,27 @@ CHARS_PER_TOKEN = 4
 # ---------------------------------------------------------------- text source
 
 
-def load_text(min_chars: int, source: str) -> str:
+def load_text(min_chars: int, source: str, text_file: str | None = None) -> str:
     """Load a long continuous natural-language text."""
+    if text_file:
+        with open(text_file) as f:
+            t = f.read()
+        while len(t) < min_chars:
+            t = t + "\n\n" + t
+        return t[:min_chars]
+
     from datasets import load_dataset
 
-    if source == "pg19":
-        ds = load_dataset("deepmind/pg19", split="train", streaming=True)
-        key = "text"
-    elif source == "wikipedia":
-        ds = load_dataset("wikipedia", "20220301.en", split="train", streaming=True)
+    if source == "wikitext":
+        ds = load_dataset("Salesforce/wikitext", "wikitext-103-raw-v1",
+                          split="train", streaming=True)
         key = "text"
     elif source == "c4":
         ds = load_dataset("allenai/c4", "en", split="train", streaming=True)
+        key = "text"
+    elif source == "fineweb":
+        ds = load_dataset("HuggingFaceFW/fineweb", name="sample-10BT",
+                          split="train", streaming=True)
         key = "text"
     else:
         raise ValueError(f"unknown source: {source}")
@@ -80,7 +89,6 @@ def load_text(min_chars: int, source: str) -> str:
         if total >= min_chars:
             break
     text = "\n\n".join(buf)
-    # Normalize whitespace so line-numbering is stable across runs.
     return text[:min_chars]
 
 
@@ -224,8 +232,9 @@ def run_case(client: OpenAI, model: str, text: str, case: Case,
     start, end = pick_span(sub, span_chars, case.position)
 
     if case.mode == "marker":
-        rng = random.Random((case.context_tokens, case.span_tokens,
-                             case.position, case.trial))
+        rng = random.Random(
+            f"{case.context_tokens}|{case.span_tokens}|{case.position}|{case.trial}"
+        )
         uid = "".join(rng.choices(string.ascii_uppercase + string.digits, k=8))
         prompt, gold = build_marker_prompt(sub, start, end, uid)
     elif case.mode == "lines":
@@ -276,8 +285,10 @@ def main():
     ap.add_argument("--base-url", default=os.environ.get(
         "OPENAI_BASE_URL", "https://api.deepseek.com/v1"))
     ap.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
-    ap.add_argument("--source", default="pg19",
-                    choices=["pg19", "wikipedia", "c4"])
+    ap.add_argument("--source", default="wikitext",
+                    choices=["wikitext", "c4", "fineweb"])
+    ap.add_argument("--text-file", default=None,
+                    help="local text file; overrides --source")
     ap.add_argument("--out", default="copy_results.jsonl")
     ap.add_argument("--trials", type=int, default=3)
     ap.add_argument("--context-sizes", type=int, nargs="+",
@@ -298,9 +309,9 @@ def main():
     client = OpenAI(api_key=api_key, base_url=args.base_url)
 
     min_chars = max(args.context_sizes) * CHARS_PER_TOKEN + 1000
-    print(f"loading ~{min_chars:,} chars from {args.source} ...",
-          file=sys.stderr)
-    text = load_text(min_chars, args.source)
+    src = args.text_file if args.text_file else args.source
+    print(f"loading ~{min_chars:,} chars from {src} ...", file=sys.stderr)
+    text = load_text(min_chars, args.source, text_file=args.text_file)
     print(f"loaded {len(text):,} chars", file=sys.stderr)
 
     with open(args.out, "w") as fout:
